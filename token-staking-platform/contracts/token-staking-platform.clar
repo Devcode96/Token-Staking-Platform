@@ -238,7 +238,7 @@
   )
 )
 
-; ===============================
+;; ===============================
 ;; ENHANCED STAKING FUNCTIONS
 ;; ===============================
 
@@ -364,8 +364,9 @@
   )
 )
 
-;; SECTION 4: REWARDS SYSTEM AND DELEGATION
-;; Commit: "feat: implement tiered rewards system, compound staking, delegation mechanism, and referral program"
+;; ===============================
+;; REWARDS SYSTEM AND DELEGATION
+;; ===============================
 
 ;; ===============================
 ;; REWARDS FUNCTIONS
