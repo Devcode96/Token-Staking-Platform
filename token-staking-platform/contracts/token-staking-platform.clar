@@ -237,3 +237,129 @@
     )
   )
 )
+
+; ===============================
+;; ENHANCED STAKING FUNCTIONS
+;; ===============================
+
+(define-public (stake-with-lockup (amount uint) (lockup-months uint))
+  (begin
+    (asserts! (not (var-get contract-paused)) ERR_CONTRACT_PAUSED)
+    (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+    (asserts! (>= amount MIN_STAKE_AMOUNT) ERR_MIN_STAKE_NOT_MET)
+    (asserts! (<= amount MAX_STAKE_AMOUNT) ERR_MAX_STAKE_EXCEEDED)
+    (asserts! (<= lockup-months u12) ERR_INVALID_DURATION)
+    
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    
+    (let 
+      (
+        (current-stake (default-to 
+          { amount: u0, stake-block: block-height, last-reward-claim: block-height, 
+            lockup-end: u0, tier: u1, total-rewards-earned: u0, streak-bonus: u0 }
+          (map-get? stakes { user: tx-sender })
+        ))
+        (lockup-blocks (* lockup-months u4320)) ;; ~30 days per month
+        (tier (calculate-tier (+ (get amount current-stake) amount)))
+      )
+      
+      (map-set stakes { user: tx-sender } {
+        amount: (+ (get amount current-stake) amount),
+        stake-block: (if (is-eq (get amount current-stake) u0) block-height (get stake-block current-stake)),
+        last-reward-claim: block-height,
+        lockup-end: (+ block-height lockup-blocks),
+        tier: tier,
+        total-rewards-earned: (get total-rewards-earned current-stake),
+        streak-bonus: (calculate-streak-bonus tx-sender)
+      })
+      
+      (var-set total-staked (+ (var-get total-staked) amount))
+      (update-user-stats tx-sender amount)
+      
+      (ok true)
+    )
+  )
+)
+
+(define-public (stake (amount uint))
+  (stake-with-lockup amount u1)
+)
+
+;; ===============================
+;; UNSTAKING FUNCTIONS
+;; ===============================
+
+(define-public (unstake-with-delay (amount uint))
+  (let ((stake-data (unwrap! (map-get? stakes { user: tx-sender }) ERR_NOT_AUTHORIZED)))
+    (begin
+      (asserts! (not (var-get contract-paused)) ERR_CONTRACT_PAUSED)
+      (asserts! (>= (get amount stake-data) amount) ERR_INSUFFICIENT_BALANCE)
+      (asserts! (>= block-height (get lockup-end stake-data)) ERR_LOCKUP_ACTIVE)
+      
+      ;; Create unstake request
+      (let ((request-id (+ block-height (get amount stake-data))))
+        (map-set unstake-requests { user: tx-sender, request-id: request-id } {
+          amount: amount,
+          request-block: block-height,
+          ready-block: (+ block-height COOLDOWN_BLOCKS),
+          processed: false
+        })
+      )
+      
+      ;; Set cooldown
+      (map-set user-cooldowns { user: tx-sender } { cooldown-end: (+ block-height COOLDOWN_BLOCKS) })
+      
+      (ok true)
+    )
+  )
+)
+
+(define-public (process-unstake-request (request-id uint))
+  (let ((request (unwrap! (map-get? unstake-requests { user: tx-sender, request-id: request-id }) ERR_NOT_AUTHORIZED)))
+    (begin
+      (asserts! (not (get processed request)) ERR_NOT_AUTHORIZED)
+      (asserts! (>= block-height (get ready-block request)) ERR_COOLDOWN_ACTIVE)
+      
+      (let ((stake-data (unwrap! (map-get? stakes { user: tx-sender }) ERR_NOT_AUTHORIZED)))
+        (try! (as-contract (stx-transfer? (get amount request) tx-sender tx-sender)))
+        
+        (map-set stakes { user: tx-sender } 
+          (merge stake-data { amount: (- (get amount stake-data) (get amount request)) }))
+        
+        (map-set unstake-requests { user: tx-sender, request-id: request-id }
+          (merge request { processed: true }))
+        
+        (var-set total-staked (- (var-get total-staked) (get amount request)))
+        
+        (ok true)
+      )
+    )
+  )
+)
+
+(define-public (unstake (amount uint))
+  (begin
+    (if (var-get emergency-mode)
+      ;; Emergency unstake - immediate
+      (emergency-unstake-internal amount)
+      ;; Normal unstake with delay
+      (unstake-with-delay amount)
+    )
+  )
+)
+
+;; Emergency unstake function (private)
+(define-private (emergency-unstake-internal (amount uint))
+  (let ((stake-data (unwrap! (map-get? stakes { user: tx-sender }) ERR_NOT_AUTHORIZED)))
+    (begin
+      (asserts! (>= (get amount stake-data) amount) ERR_INSUFFICIENT_BALANCE)
+      (try! (as-contract (stx-transfer? amount tx-sender tx-sender)))
+      
+      (map-set stakes { user: tx-sender }
+        (merge stake-data { amount: (- (get amount stake-data) amount) }))
+      
+      (var-set total-staked (- (var-get total-staked) amount))
+      (ok true)
+    )
+  )
+)
