@@ -492,3 +492,159 @@
     (ok true)
   )
 )
+
+;; ===============================
+;; HELPER FUNCTIONS
+;; ===============================
+
+(define-private (calculate-user-rewards (user principal))
+  (match (map-get? stakes { user: user })
+    stake-data
+    (let 
+      (
+        (blocks-staked (- block-height (get last-reward-claim stake-data)))
+        (base-reward (calculate-base-reward (get amount stake-data) blocks-staked))
+        (tier-bonus (calculate-tier-bonus (get tier stake-data) base-reward))
+        (streak-bonus (get streak-bonus stake-data))
+        (multiplier-bonus (calculate-multiplier-bonus base-reward))
+      )
+      (+ base-reward tier-bonus streak-bonus multiplier-bonus)
+    )
+    u0
+  )
+)
+
+(define-private (calculate-base-reward (amount uint) (blocks uint))
+  (let 
+    (
+      (annual-reward (/ (* amount BASE_REWARD_RATE) u10000))
+      (blocks-per-year u52560)
+      (reward-per-block (/ annual-reward blocks-per-year))
+    )
+    (* reward-per-block blocks)
+  )
+)
+
+(define-private (calculate-tier (amount uint))
+  (if (>= amount u50000000000) u5    ;; 50K+ STX = Tier 5
+    (if (>= amount u10000000000) u4  ;; 10K+ STX = Tier 4  
+      (if (>= amount u5000000000) u3 ;; 5K+ STX = Tier 3
+        (if (>= amount u1000000000) u2 ;; 1K+ STX = Tier 2
+          u1))))                      ;; Default = Tier 1
+)
+
+(define-private (calculate-tier-bonus (tier uint) (base-reward uint))
+  (/ (* base-reward (* tier u25)) u100) ;; 25% bonus per tier
+)
+
+(define-private (calculate-streak-bonus (user principal))
+  ;; Simple implementation - could be enhanced with actual streak tracking
+  u0
+)
+
+(define-private (calculate-multiplier-bonus (base-reward uint))
+  (let ((multiplier (var-get global-reward-multiplier)))
+    (if (> multiplier u10000)
+      (/ (* base-reward (- multiplier u10000)) u10000)
+      u0
+    )
+  )
+)
+
+(define-private (update-user-stats (user principal) (amount uint))
+  (let ((stats (default-to 
+    { total-staked-ever: u0, total-rewards-claimed: u0, stake-count: u0, referrals-made: u0, join-block: block-height }
+    (map-get? user-stats { user: user }))))
+    (map-set user-stats { user: user } 
+      (merge stats {
+        total-staked-ever: (+ (get total-staked-ever stats) amount),
+        stake-count: (+ (get stake-count stats) u1)
+      }))
+  )
+)
+
+(define-private (update-user-reward-stats (user principal) (rewards uint))
+  (let ((stats (unwrap-panic (map-get? user-stats { user: user }))))
+    (map-set user-stats { user: user }
+      (merge stats { total-rewards-claimed: (+ (get total-rewards-claimed stats) rewards) }))
+  )
+)
+
+;; ===============================
+;; READ-ONLY FUNCTIONS
+;; ===============================
+
+(define-read-only (get-stake (user principal))
+  (map-get? stakes { user: user })
+)
+
+(define-read-only (get-total-staked)
+  (var-get total-staked)
+)
+
+(define-read-only (get-user-rewards (user principal))
+  (calculate-user-rewards user)
+)
+
+(define-read-only (get-pool-info (pool-id uint))
+  (map-get? staking-pools { pool-id: pool-id })
+)
+
+(define-read-only (get-user-pool-stake (user principal) (pool-id uint))
+  (map-get? user-pool-stakes { user: user, pool-id: pool-id })
+)
+
+(define-read-only (get-delegation (delegator principal) (validator principal))
+  (map-get? delegations { delegator: delegator, validator: validator })
+)
+
+(define-read-only (get-validator-info (validator principal))
+  (map-get? validators { validator: validator })
+)
+
+(define-read-only (get-unstake-request (user principal) (request-id uint))
+  (map-get? unstake-requests { user: user, request-id: request-id })
+)
+
+(define-read-only (get-user-cooldown (user principal))
+  (map-get? user-cooldowns { user: user })
+)
+
+(define-read-only (get-referral (referrer principal) (referee principal))
+  (map-get? referrals { referrer: referrer, referee: referee })
+)
+
+(define-read-only (get-user-stats (user principal))
+  (map-get? user-stats { user: user })
+)
+
+(define-read-only (get-contract-status)
+  {
+    total-staked: (var-get total-staked),
+    total-rewards-pool: (var-get total-rewards-pool),
+    contract-paused: (var-get contract-paused),
+    emergency-mode: (var-get emergency-mode),
+    global-multiplier: (var-get global-reward-multiplier),
+    next-pool-id: (var-get next-pool-id)
+  }
+)
+
+(define-read-only (is-user-in-cooldown (user principal))
+  (match (map-get? user-cooldowns { user: user })
+    cooldown (< block-height (get cooldown-end cooldown))
+    false
+  )
+)
+
+(define-read-only (get-user-dashboard (user principal))
+  {
+    stake-info: (map-get? stakes { user: user }),
+    pending-rewards: (calculate-user-rewards user),
+    user-stats: (map-get? user-stats { user: user }),
+    cooldown-status: (is-user-in-cooldown user),
+    tier: (match (map-get? stakes { user: user })
+      stake-data (get tier stake-data)
+      u0
+    )
+  }
+)
