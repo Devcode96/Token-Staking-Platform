@@ -484,6 +484,19 @@
         active: true
       })
       
+      ;; Update referrer stats
+      (match (map-get? user-stats { user: referrer })
+        stats (map-set user-stats { user: referrer }
+                 (merge stats { referrals-made: (+ (get referrals-made stats) u1) }))
+        (map-set user-stats { user: referrer } {
+          total-staked-ever: u0,
+          total-rewards-claimed: u0,
+          stake-count: u0,
+          referrals-made: u1,
+          join-block: block-height
+        })
+      )
+      
       ;; Transfer bonus to referrer
       (and (> bonus u0) 
            (>= (var-get total-rewards-pool) bonus)
@@ -552,22 +565,37 @@
   )
 )
 
+;; Fixed function - removed block-height from default-to
 (define-private (update-user-stats (user principal) (amount uint))
-  (let ((stats (default-to 
-    { total-staked-ever: u0, total-rewards-claimed: u0, stake-count: u0, referrals-made: u0, join-block: block-height }
-    (map-get? user-stats { user: user }))))
-    (map-set user-stats { user: user } 
-      (merge stats {
-        total-staked-ever: (+ (get total-staked-ever stats) amount),
-        stake-count: (+ (get stake-count stats) u1)
-      }))
+  (match (map-get? user-stats { user: user })
+    stats (map-set user-stats { user: user } 
+            (merge stats {
+              total-staked-ever: (+ (get total-staked-ever stats) amount),
+              stake-count: (+ (get stake-count stats) u1)
+            }))
+    ;; If user doesn't exist, create new entry
+    (map-set user-stats { user: user } {
+      total-staked-ever: amount,
+      total-rewards-claimed: u0,
+      stake-count: u1,
+      referrals-made: u0,
+      join-block: block-height
+    })
   )
 )
 
 (define-private (update-user-reward-stats (user principal) (rewards uint))
-  (let ((stats (unwrap-panic (map-get? user-stats { user: user }))))
-    (map-set user-stats { user: user }
-      (merge stats { total-rewards-claimed: (+ (get total-rewards-claimed stats) rewards) }))
+  (match (map-get? user-stats { user: user })
+    stats (map-set user-stats { user: user }
+            (merge stats { total-rewards-claimed: (+ (get total-rewards-claimed stats) rewards) }))
+    ;; If user doesn't exist, this shouldn't happen, but handle it gracefully
+    (map-set user-stats { user: user } {
+      total-staked-ever: u0,
+      total-rewards-claimed: rewards,
+      stake-count: u0,
+      referrals-made: u0,
+      join-block: block-height
+    })
   )
 )
 
