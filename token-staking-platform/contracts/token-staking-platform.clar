@@ -220,12 +220,12 @@
       
       (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
       
-      (let ((current-stake (default-to { amount: u0, stake-block: block-height, last-claim: block-height }
+      (let ((current-stake (default-to { amount: u0, stake-block: stacks-block-height, last-claim: stacks-block-height }
                                        (map-get? user-pool-stakes { user: tx-sender, pool-id: pool-id }))))
         (map-set user-pool-stakes { user: tx-sender, pool-id: pool-id } {
           amount: (+ (get amount current-stake) amount),
           stake-block: (get stake-block current-stake),
-          last-claim: block-height
+          last-claim: stacks-block-height
         })
         
         (map-set staking-pools { pool-id: pool-id } 
@@ -255,7 +255,7 @@
     (let 
       (
         (current-stake (default-to 
-          { amount: u0, stake-block: block-height, last-reward-claim: block-height, 
+          { amount: u0, stake-block: stacks-block-height, last-reward-claim: stacks-block-height, 
             lockup-end: u0, tier: u1, total-rewards-earned: u0, streak-bonus: u0 }
           (map-get? stakes { user: tx-sender })
         ))
@@ -265,9 +265,9 @@
       
       (map-set stakes { user: tx-sender } {
         amount: (+ (get amount current-stake) amount),
-        stake-block: (if (is-eq (get amount current-stake) u0) block-height (get stake-block current-stake)),
-        last-reward-claim: block-height,
-        lockup-end: (+ block-height lockup-blocks),
+        stake-block: (if (is-eq (get amount current-stake) u0) stacks-block-height (get stake-block current-stake)),
+        last-reward-claim: stacks-block-height,
+        lockup-end: (+ stacks-block-height lockup-blocks),
         tier: tier,
         total-rewards-earned: (get total-rewards-earned current-stake),
         streak-bonus: (calculate-streak-bonus tx-sender)
@@ -294,20 +294,20 @@
     (begin
       (asserts! (not (var-get contract-paused)) ERR_CONTRACT_PAUSED)
       (asserts! (>= (get amount stake-data) amount) ERR_INSUFFICIENT_BALANCE)
-      (asserts! (>= block-height (get lockup-end stake-data)) ERR_LOCKUP_ACTIVE)
+      (asserts! (>= stacks-block-height (get lockup-end stake-data)) ERR_LOCKUP_ACTIVE)
       
       ;; Create unstake request
-      (let ((request-id (+ block-height (get amount stake-data))))
+      (let ((request-id (+ stacks-block-height (get amount stake-data))))
         (map-set unstake-requests { user: tx-sender, request-id: request-id } {
           amount: amount,
-          request-block: block-height,
-          ready-block: (+ block-height COOLDOWN_BLOCKS),
+          request-block: stacks-block-height,
+          ready-block: (+ stacks-block-height COOLDOWN_BLOCKS),
           processed: false
         })
       )
       
       ;; Set cooldown
-      (map-set user-cooldowns { user: tx-sender } { cooldown-end: (+ block-height COOLDOWN_BLOCKS) })
+      (map-set user-cooldowns { user: tx-sender } { cooldown-end: (+ stacks-block-height COOLDOWN_BLOCKS) })
       
       (ok true)
     )
@@ -318,7 +318,7 @@
   (let ((request (unwrap! (map-get? unstake-requests { user: tx-sender, request-id: request-id }) ERR_NOT_AUTHORIZED)))
     (begin
       (asserts! (not (get processed request)) ERR_NOT_AUTHORIZED)
-      (asserts! (>= block-height (get ready-block request)) ERR_COOLDOWN_ACTIVE)
+      (asserts! (>= stacks-block-height (get ready-block request)) ERR_COOLDOWN_ACTIVE)
       
       (let ((stake-data (unwrap! (map-get? stakes { user: tx-sender }) ERR_NOT_AUTHORIZED)))
         (try! (as-contract (stx-transfer? (get amount request) tx-sender tx-sender)))
@@ -383,7 +383,7 @@
         
         (map-set stakes { user: tx-sender }
           (merge stake-data { 
-            last-reward-claim: block-height,
+            last-reward-claim: stacks-block-height,
             total-rewards-earned: (+ (get total-rewards-earned stake-data) rewards)
           }))
         
@@ -406,7 +406,7 @@
         (map-set stakes { user: tx-sender }
           (merge stake-data {
             amount: (+ (get amount stake-data) rewards),
-            last-reward-claim: block-height,
+            last-reward-claim: stacks-block-height,
             total-rewards-earned: (+ (get total-rewards-earned stake-data) rewards)
           }))
         
@@ -435,7 +435,7 @@
         
         (map-set delegations { delegator: tx-sender, validator: validator } {
           amount: amount,
-          start-block: block-height,
+          start-block: stacks-block-height,
           fee-rate: DELEGATION_FEE_RATE
         })
         
@@ -485,17 +485,7 @@
       })
       
       ;; Update referrer stats
-      (match (map-get? user-stats { user: referrer })
-        stats (map-set user-stats { user: referrer }
-                 (merge stats { referrals-made: (+ (get referrals-made stats) u1) }))
-        (map-set user-stats { user: referrer } {
-          total-staked-ever: u0,
-          total-rewards-claimed: u0,
-          stake-count: u0,
-          referrals-made: u1,
-          join-block: block-height
-        })
-      )
+      (update-referrer-stats referrer)
       
       ;; Transfer bonus to referrer
       (and (> bonus u0) 
@@ -516,7 +506,7 @@
     stake-data
     (let 
       (
-        (blocks-staked (- block-height (get last-reward-claim stake-data)))
+        (blocks-staked (- stacks-block-height (get last-reward-claim stake-data)))
         (base-reward (calculate-base-reward (get amount stake-data) blocks-staked))
         (tier-bonus (calculate-tier-bonus (get tier stake-data) base-reward))
         (streak-bonus (get streak-bonus stake-data))
@@ -565,7 +555,7 @@
   )
 )
 
-;; Fixed function - removed block-height from default-to
+;; Fixed function - restructured to avoid block-height in default contexts
 (define-private (update-user-stats (user principal) (amount uint))
   (match (map-get? user-stats { user: user })
     stats (map-set user-stats { user: user } 
@@ -573,13 +563,13 @@
               total-staked-ever: (+ (get total-staked-ever stats) amount),
               stake-count: (+ (get stake-count stats) u1)
             }))
-    ;; If user doesn't exist, create new entry
+    ;; If user doesn't exist, create new entry with current block-height
     (map-set user-stats { user: user } {
       total-staked-ever: amount,
       total-rewards-claimed: u0,
       stake-count: u1,
       referrals-made: u0,
-      join-block: block-height
+      join-block: stacks-block-height
     })
   )
 )
@@ -594,7 +584,22 @@
       total-rewards-claimed: rewards,
       stake-count: u0,
       referrals-made: u0,
-      join-block: block-height
+      join-block: u0
+    })
+  )
+)
+
+;; Helper function for updating referrer stats
+(define-private (update-referrer-stats (referrer principal))
+  (match (map-get? user-stats { user: referrer })
+    stats (map-set user-stats { user: referrer }
+             (merge stats { referrals-made: (+ (get referrals-made stats) u1) }))
+    (map-set user-stats { user: referrer } {
+      total-staked-ever: u0,
+      total-rewards-claimed: u0,
+      stake-count: u0,
+      referrals-made: u1,
+      join-block: stacks-block-height
     })
   )
 )
@@ -660,7 +665,7 @@
 
 (define-read-only (is-user-in-cooldown (user principal))
   (match (map-get? user-cooldowns { user: user })
-    cooldown (< block-height (get cooldown-end cooldown))
+    cooldown (< stacks-block-height (get cooldown-end cooldown))
     false
   )
 )
