@@ -139,3 +139,101 @@
     join-block: uint
   }
 )
+
+;; ===============================
+;; ADMIN FUNCTIONS
+;; ===============================
+
+(define-public (pause-contract)
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (var-set contract-paused true)
+    (ok true)
+  )
+)
+
+(define-public (unpause-contract)
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (var-set contract-paused false)
+    (ok true)
+  )
+)
+
+(define-public (set-emergency-mode (enabled bool))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (var-set emergency-mode enabled)
+    (ok true)
+  )
+)
+
+(define-public (add-rewards-to-pool (amount uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    (var-set total-rewards-pool (+ (var-get total-rewards-pool) amount))
+    (ok true)
+  )
+)
+
+(define-public (set-global-reward-multiplier (multiplier uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (var-set global-reward-multiplier multiplier)
+    (ok true)
+  )
+)
+
+;; ===============================
+;; STAKING POOL FUNCTIONS
+;; ===============================
+
+(define-public (create-staking-pool (name (string-ascii 50)) (min-stake uint) (lockup-period uint) (reward-rate uint))
+  (let ((pool-id (var-get next-pool-id)))
+    (begin
+      (asserts! (not (var-get contract-paused)) ERR_CONTRACT_PAUSED)
+      (asserts! (< pool-id MAX_POOLS) ERR_MAX_STAKE_EXCEEDED)
+      
+      (map-set staking-pools { pool-id: pool-id } {
+        name: name,
+        min-stake: min-stake,
+        lockup-period: lockup-period,
+        reward-rate: reward-rate,
+        total-staked: u0,
+        active: true,
+        creator: tx-sender
+      })
+      
+      (var-set next-pool-id (+ pool-id u1))
+      (ok pool-id)
+    )
+  )
+)
+
+(define-public (stake-in-pool (pool-id uint) (amount uint))
+  (let ((pool (unwrap! (map-get? staking-pools { pool-id: pool-id }) ERR_POOL_NOT_FOUND)))
+    (begin
+      (asserts! (not (var-get contract-paused)) ERR_CONTRACT_PAUSED)
+      (asserts! (get active pool) ERR_POOL_NOT_FOUND)
+      (asserts! (>= amount (get min-stake pool)) ERR_MIN_STAKE_NOT_MET)
+      
+      (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+      
+      (let ((current-stake (default-to { amount: u0, stake-block: block-height, last-claim: block-height }
+                                       (map-get? user-pool-stakes { user: tx-sender, pool-id: pool-id }))))
+        (map-set user-pool-stakes { user: tx-sender, pool-id: pool-id } {
+          amount: (+ (get amount current-stake) amount),
+          stake-block: (get stake-block current-stake),
+          last-claim: block-height
+        })
+        
+        (map-set staking-pools { pool-id: pool-id } 
+          (merge pool { total-staked: (+ (get total-staked pool) amount) }))
+        
+        (update-user-stats tx-sender amount)
+        (ok true)
+      )
+    )
+  )
+)
