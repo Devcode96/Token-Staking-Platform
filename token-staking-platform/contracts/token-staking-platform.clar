@@ -363,3 +363,132 @@
     )
   )
 )
+
+;; SECTION 4: REWARDS SYSTEM AND DELEGATION
+;; Commit: "feat: implement tiered rewards system, compound staking, delegation mechanism, and referral program"
+
+;; ===============================
+;; REWARDS FUNCTIONS
+;; ===============================
+
+(define-public (claim-rewards)
+  (let ((stake-data (unwrap! (map-get? stakes { user: tx-sender }) ERR_NOT_AUTHORIZED)))
+    (let ((rewards (calculate-user-rewards tx-sender)))
+      (begin
+        (asserts! (> rewards u0) ERR_INSUFFICIENT_REWARDS)
+        (asserts! (>= (var-get total-rewards-pool) rewards) ERR_INSUFFICIENT_REWARDS)
+        
+        (try! (as-contract (stx-transfer? rewards tx-sender tx-sender)))
+        
+        (map-set stakes { user: tx-sender }
+          (merge stake-data { 
+            last-reward-claim: block-height,
+            total-rewards-earned: (+ (get total-rewards-earned stake-data) rewards)
+          }))
+        
+        (var-set total-rewards-pool (- (var-get total-rewards-pool) rewards))
+        (update-user-reward-stats tx-sender rewards)
+        
+        (ok rewards)
+      )
+    )
+  )
+)
+
+(define-public (compound-rewards)
+  (let ((rewards (calculate-user-rewards tx-sender)))
+    (begin
+      (asserts! (> rewards u0) ERR_INSUFFICIENT_REWARDS)
+      
+      ;; Claim rewards internally
+      (let ((stake-data (unwrap! (map-get? stakes { user: tx-sender }) ERR_NOT_AUTHORIZED)))
+        (map-set stakes { user: tx-sender }
+          (merge stake-data {
+            amount: (+ (get amount stake-data) rewards),
+            last-reward-claim: block-height,
+            total-rewards-earned: (+ (get total-rewards-earned stake-data) rewards)
+          }))
+        
+        (var-set total-staked (+ (var-get total-staked) rewards))
+        (var-set total-rewards-pool (- (var-get total-rewards-pool) rewards))
+        
+        (ok rewards)
+      )
+    )
+  )
+)
+
+;; ===============================
+;; DELEGATION FUNCTIONS
+;; ===============================
+
+(define-public (delegate-stake (validator principal) (amount uint))
+  (begin
+    (asserts! (not (var-get contract-paused)) ERR_CONTRACT_PAUSED)
+    (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+    (asserts! (is-none (map-get? delegations { delegator: tx-sender, validator: validator })) ERR_DELEGATION_EXISTS)
+    
+    (let ((stake-data (unwrap! (map-get? stakes { user: tx-sender }) ERR_NOT_AUTHORIZED)))
+      (begin
+        (asserts! (>= (get amount stake-data) amount) ERR_INSUFFICIENT_BALANCE)
+        
+        (map-set delegations { delegator: tx-sender, validator: validator } {
+          amount: amount,
+          start-block: block-height,
+          fee-rate: DELEGATION_FEE_RATE
+        })
+        
+        ;; Update validator stats
+        (let ((validator-data (default-to 
+          { total-delegated: u0, commission-rate: DELEGATION_FEE_RATE, active: true, reputation-score: u100 }
+          (map-get? validators { validator: validator }))))
+          (map-set validators { validator: validator }
+            (merge validator-data { total-delegated: (+ (get total-delegated validator-data) amount) }))
+        )
+        
+        (ok true)
+      )
+    )
+  )
+)
+
+(define-public (undelegate-stake (validator principal))
+  (let ((delegation (unwrap! (map-get? delegations { delegator: tx-sender, validator: validator }) ERR_NOT_AUTHORIZED)))
+    (begin
+      (map-delete delegations { delegator: tx-sender, validator: validator })
+      
+      ;; Update validator stats
+      (let ((validator-data (unwrap! (map-get? validators { validator: validator }) ERR_NOT_AUTHORIZED)))
+        (map-set validators { validator: validator }
+          (merge validator-data { total-delegated: (- (get total-delegated validator-data) (get amount delegation)) }))
+      )
+      
+      (ok true)
+    )
+  )
+)
+
+;; ===============================
+;; REFERRAL FUNCTIONS
+;; ===============================
+
+(define-public (stake-with-referral (amount uint) (referrer principal))
+  (begin
+    (try! (stake amount))
+    
+    ;; Add referral bonus (5% of stake amount)
+    (let ((bonus (/ (* amount u500) u10000)))
+      (map-set referrals { referrer: referrer, referee: tx-sender } {
+        bonus-earned: bonus,
+        active: true
+      })
+      
+      ;; Transfer bonus to referrer
+      (and (> bonus u0) 
+           (>= (var-get total-rewards-pool) bonus)
+           (is-ok (as-contract (stx-transfer? bonus tx-sender referrer))))
+    )
+    
+    (ok true)
+  )
+)
